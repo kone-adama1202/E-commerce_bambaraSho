@@ -57,6 +57,8 @@ const HEADER_STYLES = `
 }
 `;
 
+const pathOf = (h: string) => h.split('?')[0];
+
 type MobileLink = { href: string; label: string; icon: LucideIcon; badge?: number };
 
 export function Header() {
@@ -74,25 +76,88 @@ export function Header() {
   );
   const prevItems = useRef(totalItems);
   const headerRef = useRef<HTMLElement>(null);
+  const scrollSources = useRef(new Map<EventTarget, number>());
+  const prevPath = useRef(pathOf(typeof window !== 'undefined' ? window.location.hash || '#/' : '#/'));
 
   const closeAll = useCallback(() => {
     setMobileOpen(false);
     setUserMenuOpen(false);
   }, []);
 
-  // Header qui se compacte au scroll
+  // Header qui se compacte au scroll. Fonctionne avec le scroll de la page ET avec
+  // un conteneur de page scrollable (ex. layout admin en overflow-auto).
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 40);
-    onScroll();
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
+    const sources = scrollSources.current;
+
+    const update = () => {
+      // oublie les conteneurs qui ont disparu avec la page précédente
+      sources.forEach((_, k) => {
+        if (k instanceof HTMLElement && !k.isConnected) sources.delete(k);
+      });
+      const top = Math.max(0, ...sources.values());
+      // hystérésis : évite le va-et-vient quand la page est courte
+      setScrolled(prev => (prev ? top > 8 : top > 56));
+    };
+
+    const onScroll = (e: Event) => {
+      const t = e.target;
+      if (t === document || t === document.documentElement || t === document.body) {
+        sources.set(window, window.scrollY);
+      } else if (t instanceof HTMLElement) {
+        if (t.closest('[data-hdr-ignore]')) return; // menu mobile du header
+        if (t.scrollHeight <= t.clientHeight) return; // pas de scroll vertical
+        if (t.clientHeight < window.innerHeight * 0.5) return; // petites listes, carrousels
+        sources.set(t, t.scrollTop);
+      } else {
+        return;
+      }
+      update();
+    };
+
+    sources.set(window, window.scrollY);
+    update();
+    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
+    return () => {
+      document.removeEventListener('scroll', onScroll, true);
+      sources.clear();
+    };
   }, []);
 
-  // Lien actif + fermeture des menus à chaque changement de page
+  // Hauteur du header exposée aux autres pages : var(--header-h)
+  // + les liens d'ancre ne passent plus sous le header.
+  useLayoutEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const update = () => root.style.setProperty('--header-h', `${Math.round(el.getBoundingClientRect().height)}px`);
+    update();
+    root.style.setProperty('scroll-padding-top', 'var(--header-h)');
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty('--header-h');
+      root.style.removeProperty('scroll-padding-top');
+    };
+  }, []);
+
+  // Lien actif + fermeture des menus + retour en haut à chaque changement de page
+  // (un simple changement de filtre, ex. ?category=..., ne remonte pas la page)
   useEffect(() => {
     const onHash = () => {
-      setHash(window.location.hash || '#/');
+      const next = window.location.hash || '#/';
+      setHash(next);
       closeAll();
+      if (pathOf(next) !== prevPath.current) {
+        prevPath.current = pathOf(next);
+        window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+        scrollSources.current.forEach((_, k) => {
+          if (k instanceof HTMLElement) k.scrollTop = 0;
+        });
+        scrollSources.current.clear();
+        scrollSources.current.set(window, 0);
+        setScrolled(false);
+      }
     };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
@@ -433,6 +498,7 @@ export function Header() {
           if ((e.target as HTMLElement).closest('a')) closeAll();
         }}
         aria-hidden={!mobileOpen}
+        data-hdr-ignore="true"
         style={{ top: menuTop + 8, maxHeight: `calc(100dvh - ${menuTop + 8}px - 12px)` }}
         className={`md:hidden fixed inset-x-3 z-[45] overflow-y-auto overscroll-contain rounded-3xl bg-white p-2.5 shadow-[0_24px_60px_-14px_rgba(40,20,0,0.5)] ring-1 ring-black/5 origin-top transition-[opacity,transform,visibility] duration-300 ease-[cubic-bezier(.22,1,.36,1)] ${
           mobileOpen
@@ -651,7 +717,7 @@ function MenuItem({
   label: string;
   onClick: () => void;
 }) {
-  return ( 
+  return (
     <button
       onClick={onClick}
       className="group w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#282828] hover:bg-[#FFF3E5] hover:text-[#F68B1E] hover:pl-6 transition-all"
